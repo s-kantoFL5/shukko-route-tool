@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>出張ルート表 自動化ツール</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">経路</span>
+      <div class="brand-text">
+        <input id="tripTitle" class="trip-title" value="出張ルート表" />
+        <span class="brand-sub">院名・地名を入れるだけで、住所・営業時間・車移動時間を自動補完</span>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="btn ghost" id="btnRecalcAll" title="すべての車移動時間を再計算">🔄 全再計算</button>
+      <button class="btn ghost" id="btnLoad" title="保存したJSONファイルを読み込む">📂 読み込み</button>
+      <input type="file" id="fileInput" accept="application/json" hidden />
+      <button class="btn ghost" id="btnSaveJson" title="編集を続けられる形式で保存">💾 保存(JSON)</button>
+      <button class="btn primary" id="btnExportExcel" title="共有・印刷用のExcelを書き出す">📊 Excel出力</button>
+    </div>
+  </div>
+</header>
+
+<main id="days"></main>
+
+<div class="add-day-row">
+  <button class="btn outline" id="btnAddDay">＋ 日程を追加</button>
+</div>
+
+<footer class="foot-note">
+  車移動時間は OpenStreetMap（Nominatim / OSRM）による概算です。実際の道路状況・通行止め等により誤差が生じる場合があります。
+</footer>
+
+<datalist id="hospital-list"></datalist>
+
+<template id="dayTemplate">
+  <section class="day-card">
+    <div class="day-head">
+      <input type="text" class="day-date" placeholder="12/3(水)" />
+      <input type="text" class="day-memo" placeholder="この日のメモ（任意）" />
+      <button class="btn icon danger day-remove" title="この日を削除">🗑</button>
+    </div>
+    <div class="table-scroll">
+      <table class="stop-table">
+        <thead>
+          <tr>
+            <th class="col-place">院名・行動内容</th>
+            <th class="col-address">住所（自動／編集可）</th>
+            <th class="col-time">到着</th>
+            <th class="col-time">滞在</th>
+            <th class="col-time">出発</th>
+            <th class="col-drive">車移動時間</th>
+            <th class="col-hours">営業時間</th>
+            <th class="col-corp">法人名</th>
+            <th class="col-checks">チェック</th>
+            <th class="col-note">備考</th>
+            <th class="col-ops"></th>
+          </tr>
+        </thead>
+        <tbody class="stop-body"></tbody>
+      </table>
+    </div>
+    <button class="btn outline small add-stop">＋ 行程を追加</button>
+  </section>
+</template>
+
+<template id="stopTemplate">
+  <tr class="stop-row">
+    <td class="col-place">
+      <input type="text" class="f-place" list="hospital-list" placeholder="院名 または 地名" />
+    </td>
+    <td class="col-address">
+      <input type="text" class="f-address" placeholder="自動入力されます" />
+    </td>
+    <td class="col-time"><input type="text" class="f-arrival" placeholder="9:30" /></td>
+    <td class="col-time"><input type="text" class="f-stay" placeholder="0:15" /></td>
+    <td class="col-time"><input type="text" class="f-departure" placeholder="9:45" /></td>
+    <td class="col-drive">
+      <div class="drive-cell">
+        <span class="f-drive-text">—</span>
+        <button class="btn icon tiny f-drive-refresh" title="再計算">🔄</button>
+      </div>
+    </td>
+    <td class="col-hours"><span class="f-hours">—</span></td>
+    <td class="col-corp"><span class="f-corp">—</span></td>
+    <td class="col-checks">
+      <label class="chk"><input type="checkbox" class="f-check" data-key="review" />口コミ</label>
+      <label class="chk"><input type="checkbox" class="f-check" data-key="blog" />ブログ</label>
+      <label class="chk"><input type="checkbox" class="f-check" data-key="payment" />入金</label>
+      <label class="chk"><input type="checkbox" class="f-check" data-key="stock" />棚卸</label>
+      <label class="chk"><input type="checkbox" class="f-check" data-key="rese" />レセ</label>
+      <label class="chk"><input type="checkbox" class="f-check" data-key="inquiry" />問合せ</label>
+    </td>
+    <td class="col-note"><input type="text" class="f-note" placeholder="備考" /></td>
+    <td class="col-ops">
+      <button class="btn icon tiny move-up" title="上へ">▲</button>
+      <button class="btn icon tiny move-down" title="下へ">▼</button>
+      <button class="btn icon tiny danger remove-stop" title="削除">✕</button>
+    </td>
+  </tr>
+</template>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
