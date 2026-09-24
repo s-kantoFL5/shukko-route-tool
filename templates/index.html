@@ -29,6 +29,17 @@
   </div>
 </header>
 
+<div class="preset-bar">
+  <label for="presetSelect">よく使うルート</label>
+  <select id="presetSelect">
+    <option value="">選択してください…</option>
+    <optgroup label="関東（本社発着）" id="presetGroupKanto"></optgroup>
+    <optgroup label="地方（主要駅発）" id="presetGroupChihou"></optgroup>
+  </select>
+  <button class="btn outline small" id="btnLoadPreset">＋ 新しい日として追加</button>
+  <span class="preset-hint">関東圏は本社（ミーナアサヒビル）発着、地方は主要駅発で自動的に並びます。読み込み後も行の追加・削除・並べ替えは自由にできます。</span>
+</div>
+
 <main id="days"></main>
 
 <div class="add-day-row">
@@ -109,6 +120,7 @@
 </template>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="/static/presets.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
