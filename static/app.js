@@ -42,10 +42,31 @@
       const res = await fetch("/api/hospitals");
       hospitals = await res.json();
       hospitalsByName = new Map(hospitals.map((h) => [h.name, h]));
+
+      // 店舗マスタに無い共通の起点（本社など）を検索対象に追加
+      const waypoints = (window.ROUTE_PRESETS && window.ROUTE_PRESETS.WAYPOINTS) || [];
+      waypoints.forEach((w) => hospitalsByName.set(w.name, w));
+
       const list = document.getElementById("hospital-list");
-      list.innerHTML = hospitals.map((h) => `<option value="${escapeAttr(h.name)}"></option>`).join("");
+      const names = hospitals.map((h) => h.name).concat(waypoints.map((w) => w.name));
+      list.innerHTML = names.map((n) => `<option value="${escapeAttr(n)}"></option>`).join("");
     } catch (e) {
       console.error("店舗マスタの取得に失敗しました", e);
+    }
+  }
+
+  // 院名・地名から住所／営業時間／法人名を補完する（手入力・プリセット読み込み共通）
+  // geocodeHint: マスタに無い地名の場合、地図検索の精度を上げるために付け足す都道府県名など
+  function applyPlaceLookup(stop, geocodeHint) {
+    const hit = hospitalsByName.get(stop.place.trim());
+    if (hit) {
+      stop.address = hit.full_address;
+      stop.hours = hit.hours_display;
+      stop.corp = hit.corp;
+    } else if (stop.place.trim() && !stop.address.trim()) {
+      stop.address = geocodeHint ? `${geocodeHint}${stop.place.trim()}` : stop.place.trim();
+      stop.hours = "";
+      stop.corp = "";
     }
   }
 
@@ -159,17 +180,7 @@
 
     placeEl.addEventListener("change", () => {
       stop.place = placeEl.value;
-      const hit = hospitalsByName.get(stop.place.trim());
-      if (hit) {
-        stop.address = hit.full_address;
-        stop.hours = hit.hours_display;
-        stop.corp = hit.corp;
-      } else if (stop.place.trim() && !stop.address.trim()) {
-        // マスタに無い地名：地名そのものを住所欄の初期値にする（あとで編集可）
-        stop.address = stop.place.trim();
-        stop.hours = "";
-        stop.corp = "";
-      }
+      applyPlaceLookup(stop);
       addressEl.value = stop.address;
       hoursEl.textContent = stop.hours || "—";
       corpEl.textContent = stop.corp || "—";
@@ -335,6 +346,65 @@
   });
 
   document.getElementById("btnExportExcel").addEventListener("click", exportExcel);
+
+  // ---------- ルートプリセット ----------
+  function populatePresetSelect() {
+    const presets = window.ROUTE_PRESETS;
+    if (!presets) return;
+    const kantoGroup = document.getElementById("presetGroupKanto");
+    const chihouGroup = document.getElementById("presetGroupChihou");
+    presets.KANTO_PRESETS.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = "kanto:" + p.key;
+      opt.textContent = p.label + (p.note ? `（${p.note}）` : "");
+      kantoGroup.appendChild(opt);
+    });
+    presets.CHIHOU_PRESETS.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = "chihou:" + p.key;
+      opt.textContent = p.label;
+      chihouGroup.appendChild(opt);
+    });
+  }
+
+  function findPreset(value) {
+    if (!value) return null;
+    const [region, key] = value.split(":");
+    const presets = window.ROUTE_PRESETS;
+    const list = region === "kanto" ? presets.KANTO_PRESETS : presets.CHIHOU_PRESETS;
+    const preset = list.find((p) => p.key === key);
+    return preset ? { ...preset, region } : null;
+  }
+
+  function buildStopFromName(name, pref) {
+    const stop = emptyStop();
+    stop.place = name;
+    applyPlaceLookup(stop, pref);
+    return stop;
+  }
+
+  document.getElementById("btnLoadPreset").addEventListener("click", () => {
+    const select = document.getElementById("presetSelect");
+    const preset = findPreset(select.value);
+    if (!preset) {
+      alert("ルートを選択してください。");
+      return;
+    }
+
+    const hq = { name: window.ROUTE_PRESETS.HQ_NAME, pref: "" };
+    const entries = preset.region === "kanto" ? [hq, ...preset.stops, hq] : [...preset.stops];
+
+    const day = {
+      date: "",
+      memo: preset.label + (preset.note ? `（${preset.note}）` : ""),
+      stops: entries.map((e) => buildStopFromName(e.name, e.pref)),
+    };
+    trip.days.push(day);
+    renderAll();
+    recalcAllDriveTimes();
+  });
+
+  populatePresetSelect();
 
   function exportExcel() {
     const header = [
