@@ -47,7 +47,8 @@
 </div>
 
 <footer class="foot-note">
-  車移動時間は OpenStreetMap（Nominatim / OSRM）による概算です。実際の道路状況・通行止め等により誤差が生じる場合があります。
+  移動時間（車・徒歩）は OpenStreetMap（Nominatim / OSRM）による概算です。実際の道路状況・通行止め等により誤差が生じる場合があります。
+  時間欄に直接入力すると、その値で固定されます（電車の所要時間など）。🔄ボタンで自動計算に戻せます。
 </footer>
 
 <datalist id="hospital-list"></datalist>
@@ -68,7 +69,7 @@
             <th class="col-time">到着</th>
             <th class="col-time">滞在</th>
             <th class="col-time">出発</th>
-            <th class="col-drive">車移動時間</th>
+            <th class="col-drive">移動時間（次の行まで）</th>
             <th class="col-hours">営業時間</th>
             <th class="col-corp">法人名</th>
             <th class="col-checks">チェック</th>
@@ -96,9 +97,15 @@
     <td class="col-time"><input type="text" class="f-departure" placeholder="h:mm" /></td>
     <td class="col-drive">
       <div class="drive-cell">
-        <span class="f-drive-text">—</span>
-        <button class="btn icon tiny f-drive-refresh" title="再計算">🔄</button>
+        <select class="f-drive-mode" title="移動手段">
+          <option value="car">🚗車</option>
+          <option value="walk">🚶徒歩</option>
+        </select>
+        <input type="text" class="f-drive-time" placeholder="h:mm" title="移動時間（手入力で上書きできます）" />
+        <span class="f-drive-km"></span>
+        <button class="btn icon tiny f-drive-refresh" title="自動で再計算（手入力を解除）">🔄</button>
       </div>
+      <div class="f-drive-error" hidden></div>
     </td>
     <td class="col-hours"><span class="f-hours">—</span></td>
     <td class="col-corp"><span class="f-corp">—</span></td>
