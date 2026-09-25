@@ -36,9 +36,14 @@
       departure: "",
       arrivalManual: false,
       departureManual: false,
+      // ここに入っている車移動時間・徒歩時間は「前の行からこの行まで」の移動を表す。
+      // 画面上は1行上にずらして「この行から次の行まで」として表示している（recalcOneのコメント参照）。
+      driveMode: "car", // "car" | "walk"
       driveMinutes: null,
-      driveText: "",
+      driveKm: null,
+      driveManual: false, // 手入力で上書きした場合、自動再計算では上書きしない
       driveError: "",
+      pending: false,
       hours: "",
       corp: "",
       checks: { review: false, blog: false, payment: false, stock: false, rese: false, inquiry: false },
@@ -141,6 +146,36 @@
     });
   }
 
+  // renderAll()は行の増減など構造が変わるときだけ使う。
+  // 車移動時間の自動計算のように行の数が変わらない更新はこちらを使う。
+  // DOM要素を作り直さないので、日付やメモなど他の欄を編集中でも消えたりフォーカスが外れたりしない。
+  function refreshValues() {
+    const dayCards = daysEl.querySelectorAll(".day-card");
+    trip.days.forEach((day, dayIdx) => {
+      const dayCard = dayCards[dayIdx];
+      if (!dayCard) return;
+      const rows = dayCard.querySelectorAll(".stop-row");
+      day.stops.forEach((stop, stopIdx) => {
+        const row = rows[stopIdx];
+        if (!row) return;
+        refreshRowValues(row, day, stopIdx);
+      });
+    });
+  }
+
+  function refreshRowValues(row, day, stopIdx) {
+    const stop = day.stops[stopIdx];
+    const setIfNotFocused = (el, value) => {
+      if (document.activeElement !== el) el.value = value;
+    };
+    setIfNotFocused(row.querySelector(".f-arrival"), stop.arrival);
+    setIfNotFocused(row.querySelector(".f-stay"), stop.stay);
+    setIfNotFocused(row.querySelector(".f-departure"), stop.departure);
+    row.querySelector(".f-hours").textContent = stop.hours || "—";
+    row.querySelector(".f-corp").textContent = stop.corp || "—";
+    updateDriveCell(row, day.stops[stopIdx + 1] || null);
+  }
+
   function renderDay(day, dayIdx) {
     const node = dayTpl.content.firstElementChild.cloneNode(true);
     const dateInput = node.querySelector(".day-date");
@@ -191,7 +226,6 @@
     const arrivalEl = node.querySelector(".f-arrival");
     const stayEl = node.querySelector(".f-stay");
     const departureEl = node.querySelector(".f-departure");
-    const driveTextEl = node.querySelector(".f-drive-text");
     const hoursEl = node.querySelector(".f-hours");
     const corpEl = node.querySelector(".f-corp");
     const noteEl = node.querySelector(".f-note");
@@ -204,7 +238,7 @@
     noteEl.value = stop.note;
     hoursEl.textContent = stop.hours || "—";
     corpEl.textContent = stop.corp || "—";
-    setDriveDisplay(driveTextEl, stop);
+    updateDriveCell(node, day.stops[stopIdx + 1] || null);
 
     node.querySelectorAll(".f-check").forEach((cb) => {
       const key = cb.dataset.key;
@@ -230,22 +264,58 @@
       stop.arrival = arrivalEl.value;
       stop.arrivalManual = arrivalEl.value.trim() !== "";
       cascadeDay(dayIdx, stopIdx);
-      renderAll();
+      refreshValues();
     });
     stayEl.addEventListener("change", () => {
       stop.stay = stayEl.value;
       cascadeDay(dayIdx, stopIdx);
-      renderAll();
+      refreshValues();
     });
     departureEl.addEventListener("change", () => {
       stop.departure = departureEl.value;
       stop.departureManual = departureEl.value.trim() !== "";
       cascadeDay(dayIdx, stopIdx);
-      renderAll();
+      refreshValues();
     });
     noteEl.addEventListener("input", () => (stop.note = noteEl.value));
 
-    node.querySelector(".f-drive-refresh").addEventListener("click", () => recalcOne(dayIdx, stopIdx, true));
+    // 車移動時間・徒歩時間はこの行ではなく「次の行」のデータを表示・編集する
+    // （出発＋移動時間＝次の行の到着、として読めるように1行ずらしている）
+    const driveModeEl = node.querySelector(".f-drive-mode");
+    const driveTimeEl = node.querySelector(".f-drive-time");
+    const driveRefreshBtn = node.querySelector(".f-drive-refresh");
+
+    driveModeEl.addEventListener("change", () => {
+      const next = day.stops[stopIdx + 1];
+      if (!next) return;
+      next.driveMode = driveModeEl.value;
+      next.driveManual = false;
+      recalcOne(dayIdx, stopIdx + 1, true);
+    });
+
+    driveTimeEl.addEventListener("change", () => {
+      const next = day.stops[stopIdx + 1];
+      if (!next) return;
+      const mins = parseHM(driveTimeEl.value);
+      if (mins == null) {
+        // 空にしたら自動計算に戻す
+        next.driveManual = false;
+        recalcOne(dayIdx, stopIdx + 1, true);
+      } else {
+        next.driveManual = true;
+        next.driveMinutes = mins;
+        next.driveKm = null;
+        next.driveError = "";
+        cascadeDay(dayIdx, stopIdx + 1);
+        refreshValues();
+      }
+    });
+
+    driveRefreshBtn.addEventListener("click", () => {
+      const next = day.stops[stopIdx + 1];
+      if (!next) return;
+      recalcOne(dayIdx, stopIdx + 1, true);
+    });
 
     node.querySelector(".move-up").addEventListener("click", () => {
       if (stopIdx === 0) return;
@@ -271,48 +341,98 @@
     return node;
   }
 
-  function setDriveDisplay(el, stop) {
-    if (stop.driveError) {
-      el.textContent = stop.driveError;
-      el.className = "f-drive-text error";
-    } else if (stop.driveText) {
-      el.textContent = stop.driveText;
-      el.className = "f-drive-text";
+  // rowは「stopIdx番目の行」、nextStopは「stopIdx+1番目のstop」（無ければ最終行）。
+  // 車移動時間・徒歩時間はnextStop側のデータを表示する（①出発＋移動時間＝次の到着、に揃えるため）。
+  function updateDriveCell(row, nextStop) {
+    const modeEl = row.querySelector(".f-drive-mode");
+    const timeEl = row.querySelector(".f-drive-time");
+    const kmEl = row.querySelector(".f-drive-km");
+    const errorEl = row.querySelector(".f-drive-error");
+    const refreshBtn = row.querySelector(".f-drive-refresh");
+    const focused = document.activeElement;
+
+    if (!nextStop) {
+      modeEl.disabled = true;
+      timeEl.disabled = true;
+      timeEl.placeholder = "";
+      if (focused !== timeEl) timeEl.value = "";
+      kmEl.textContent = "";
+      errorEl.textContent = "";
+      errorEl.hidden = true;
+      refreshBtn.disabled = true;
+      return;
+    }
+
+    modeEl.disabled = false;
+    timeEl.disabled = false;
+    refreshBtn.disabled = false;
+    if (focused !== modeEl) modeEl.value = nextStop.driveMode || "car";
+
+    if (nextStop.pending) {
+      timeEl.placeholder = "計算中…";
+      if (focused !== timeEl) timeEl.value = "";
+      kmEl.textContent = "";
     } else {
-      el.textContent = "—";
-      el.className = "f-drive-text";
+      timeEl.placeholder = "h:mm";
+      if (focused !== timeEl) {
+        timeEl.value = nextStop.driveMinutes != null ? formatHM(nextStop.driveMinutes) : "";
+      }
+      kmEl.textContent = nextStop.driveKm != null ? `(${nextStop.driveKm}km)` : "";
+    }
+
+    if (nextStop.driveError) {
+      errorEl.textContent = nextStop.driveError;
+      errorEl.hidden = false;
+    } else {
+      errorEl.textContent = "";
+      errorEl.hidden = true;
     }
   }
 
-  // ---------- 車移動時間の自動計算 ----------
+  // 車移動時間の表示用テキストを作る（Excel出力でも同じ並びを使う）
+  function formatDriveDisplay(stop) {
+    if (!stop) return "";
+    if (stop.driveError) return stop.driveError;
+    if (stop.driveMinutes != null) {
+      return formatHM(stop.driveMinutes) + (stop.driveKm != null ? `（${stop.driveKm}km）` : "");
+    }
+    return "";
+  }
+
+  // ---------- 車移動時間／徒歩時間の自動計算 ----------
   async function recalcOne(dayIdx, stopIdx, force) {
     const day = trip.days[dayIdx];
     const stop = day.stops[stopIdx];
     const prev = getPreviousStop(dayIdx, stopIdx);
 
+    // 手入力で上書きされている場合、明示的な再計算（🔄・モード変更）以外では自動上書きしない
+    if (stop.driveManual && !force) return;
+    stop.driveManual = false;
+
     if (!prev || !prev.address.trim() || !stop.address.trim()) {
-      stop.driveText = "";
-      stop.driveError = "";
       stop.driveMinutes = null;
+      stop.driveKm = null;
+      stop.driveError = "";
       cascadeDay(dayIdx, stopIdx);
-      renderAll();
+      refreshValues();
       return;
     }
 
-    const key = prev.address.trim() + "||" + stop.address.trim();
+    const mode = stop.driveMode || "car";
+    const key = prev.address.trim() + "||" + stop.address.trim() + "||" + mode;
     if (!force && driveCache.has(key)) {
       applyDriveResult(stop, driveCache.get(key));
       cascadeDay(dayIdx, stopIdx);
-      renderAll();
+      refreshValues();
       return;
     }
 
-    stop.driveText = "計算中…";
+    stop.pending = true;
     stop.driveError = "";
-    renderAll();
+    refreshValues();
 
     try {
-      const url = `/api/drivetime?origin=${encodeURIComponent(prev.address)}&destination=${encodeURIComponent(stop.address)}`;
+      const url = `/api/drivetime?origin=${encodeURIComponent(prev.address)}&destination=${encodeURIComponent(stop.address)}&mode=${encodeURIComponent(mode)}`;
       const res = await fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -322,18 +442,19 @@
       driveCache.set(key, data);
       applyDriveResult(stop, data);
     } catch (e) {
-      stop.driveText = "";
-      stop.driveError = String(e.message || e).slice(0, 40);
       stop.driveMinutes = null;
+      stop.driveKm = null;
+      stop.driveError = String(e.message || e).slice(0, 60);
     }
+    stop.pending = false;
     cascadeDay(dayIdx, stopIdx);
-    renderAll();
+    refreshValues();
   }
 
   function applyDriveResult(stop, data) {
-    stop.driveText = `${data.duration_text}（${data.distance_km}km）`;
-    stop.driveError = "";
     stop.driveMinutes = data.duration_sec / 60;
+    stop.driveKm = data.distance_km;
+    stop.driveError = "";
   }
 
   function recalcAround(dayIdx, stopIdx) {
@@ -480,7 +601,7 @@
     const rows = [header];
     trip.days.forEach((day) => {
       rows.push([`${day.date || ""} ${day.memo || ""}`.trim()]);
-      day.stops.forEach((s) => {
+      day.stops.forEach((s, i) => {
         rows.push([
           "",
           s.place,
@@ -488,7 +609,7 @@
           s.arrival,
           s.stay,
           s.departure,
-          s.driveText || "",
+          formatDriveDisplay(day.stops[i + 1]),
           s.hours,
           s.corp,
           s.checks.review ? "済" : "",
