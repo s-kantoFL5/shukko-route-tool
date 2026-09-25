@@ -11,8 +11,19 @@
     days: [emptyDay()],
   };
 
+  function startTime() {
+    return (window.ROUTE_PRESETS && window.ROUTE_PRESETS.START_TIME) || "9:00";
+  }
+
+  function clinicStay() {
+    return (window.ROUTE_PRESETS && window.ROUTE_PRESETS.CLINIC_STAY) || "0:15";
+  }
+
   function emptyDay() {
-    return { date: "", memo: "", stops: [emptyStop()] };
+    // 1日の起点は既定で9:00出発。ここを変えると以降の時刻がすべて自動で計算し直される。
+    const first = emptyStop();
+    first.departure = startTime();
+    return { date: "", memo: "", stops: [first] };
   }
 
   function emptyStop() {
@@ -66,6 +77,8 @@
       stop.address = hit.full_address;
       stop.hours = hit.hours_display;
       stop.corp = hit.corp;
+      // 院に入ったときの滞在時間は15分固定（本社・駅などの経由地は対象外）
+      if (!hit.isWaypoint && !stop.stay.trim()) stop.stay = clinicStay();
     } else if (stop.place.trim() && !stop.address.trim()) {
       stop.address = geocodeHint ? `${geocodeHint}${stop.place.trim()}` : stop.place.trim();
       stop.hours = "";
@@ -162,33 +175,12 @@
     return node;
   }
 
-  function flatIndex(dayIdx, stopIdx) {
-    // 全日程を通したときの通し番号（前の訪問地を求めるため）
-    let n = 0;
-    for (let d = 0; d < dayIdx; d++) n += trip.days[d].stops.length;
-    return n + stopIdx;
-  }
-
-  function flattenStops() {
-    const flat = [];
-    trip.days.forEach((day, dayIdx) => {
-      day.stops.forEach((stop, stopIdx) => flat.push({ stop, dayIdx, stopIdx }));
-    });
-    return flat;
-  }
-
+  // 車移動時間は同じ日の中だけで計算する。
+  // 日の1行目は出発地点（本社・主要駅・ホテルなど）なので、
+  // 前日の最後からの移動時間（新幹線・飛行機の区間）は出さない。
   function getPreviousStop(dayIdx, stopIdx) {
-    const flat = flattenStops();
-    const idx = flatIndex(dayIdx, stopIdx);
-    if (idx === 0) return null;
-    return flat[idx - 1].stop;
-  }
-
-  function getNextStop(dayIdx, stopIdx) {
-    const flat = flattenStops();
-    const idx = flatIndex(dayIdx, stopIdx);
-    if (idx >= flat.length - 1) return null;
-    return flat[idx + 1].stop;
+    if (stopIdx === 0) return null;
+    return trip.days[dayIdx].stops[stopIdx - 1];
   }
 
   function renderStop(day, dayIdx, stop, stopIdx) {
@@ -346,19 +338,17 @@
 
   function recalcAround(dayIdx, stopIdx) {
     recalcOne(dayIdx, stopIdx, false);
-    const next = getNextStop(dayIdx, stopIdx);
-    if (next) {
-      // 次の行は「このstopが前の訪問地」になるため再計算
-      const flat = flattenStops();
-      const nextEntry = flat[flatIndex(dayIdx, stopIdx) + 1];
-      if (nextEntry) recalcOne(nextEntry.dayIdx, nextEntry.stopIdx, false);
+    // 次の行は「このstopが前の訪問地」になるため再計算
+    if (stopIdx + 1 < trip.days[dayIdx].stops.length) {
+      recalcOne(dayIdx, stopIdx + 1, false);
     }
   }
 
   async function recalcAllDriveTimes() {
-    const flat = flattenStops();
-    for (let i = 1; i < flat.length; i++) {
-      await recalcOne(flat[i].dayIdx, flat[i].stopIdx, false);
+    for (let d = 0; d < trip.days.length; d++) {
+      for (let s = 1; s < trip.days[d].stops.length; s++) {
+        await recalcOne(d, s, false);
+      }
     }
   }
 
@@ -438,9 +428,11 @@
     return preset ? { ...preset, region } : null;
   }
 
-  function buildStopFromName(name, pref) {
+  // address を渡した場合は地図検索用の住所を固定する（主要駅など、名前だけでは誤検索されるもの）
+  function buildStopFromName(name, pref, address) {
     const stop = emptyStop();
     stop.place = name;
+    if (address) stop.address = address;
     applyPlaceLookup(stop, pref);
     return stop;
   }
@@ -453,15 +445,27 @@
       return;
     }
 
-    const hq = { name: window.ROUTE_PRESETS.HQ_NAME, pref: "" };
-    const entries = preset.region === "kanto" ? [hq, ...preset.stops, hq] : [...preset.stops];
+    // 関東圏は本社を起点・終点に、地方は主要駅を起点に自動で置く
+    const entries =
+      preset.region === "kanto"
+        ? [
+            { name: window.ROUTE_PRESETS.HQ_NAME, pref: "" },
+            ...preset.stops,
+            { name: window.ROUTE_PRESETS.HQ_NAME, pref: "" },
+          ]
+        : [{ name: preset.start.name, pref: preset.pref, address: preset.start.address }, ...preset.stops];
+
+    const stops = entries.map((e) => buildStopFromName(e.name, e.pref, e.address));
+    stops[0].departure = startTime(); // 起点は9:00出発。以降は自動計算で埋まる
+    stops[0].stay = "";
 
     const day = {
       date: "",
       memo: preset.label + (preset.note ? `（${preset.note}）` : ""),
-      stops: entries.map((e) => buildStopFromName(e.name, e.pref)),
+      stops,
     };
     trip.days.push(day);
+    cascadeDay(trip.days.length - 1, 0);
     renderAll();
     recalcAllDriveTimes();
   });
