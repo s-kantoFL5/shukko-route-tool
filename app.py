@@ -37,6 +37,7 @@ app = FastAPI(title="出張ルート表 自動化ツール")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+GSI_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch"
 OSRM_URL_BY_MODE = {
     "car": "https://router.project-osrm.org/route/v1/driving/{}",
     "walk": "https://routing.openstreetmap.de/routed-foot/route/v1/foot/{}",
@@ -99,27 +100,26 @@ def _address_variants(address: str) -> list[str]:
     return ordered
 
 
-# OpenStreetMapに登録が無い・別地点に当たってしまう住所を、確認済みの検索語に差し替える。
-# 表示用の住所（②店舗マスタ）はそのままで、地図検索だけを置き換える。
-GEOCODE_OVERRIDES = {
-    "長野県長野市高田 1758": "長野県長野市高田南長野",  # MEGAドン・キホーテ長野高田院
-    "大阪府大阪市淀川区三国本町 3": "阪急三国駅",  # 三国エキナカ接骨院（阪急三国駅2F）
-    "千葉県茂原市六ツ野八貫野 2785-1": "ライフガーデン茂原",  # ライフガーデン茂原整骨院
-    "静岡県静岡市駿河区みずほ 4-11-5": "静岡県静岡市駿河区 安倍川駅",  # 安倍川駅前総合治療院
-    "北海道札幌市東区北三十三条東 15-1-1": "北海道札幌市東区 新道東駅",  # 新道東駅接骨院
-    "大阪府交野市森北 1-36-7-102": "河内磐船駅",  # 河内いわふね駅前整骨院
-    "大阪府堺市南区三原台1-1-3": "泉ヶ丘駅 堺市",  # すまいる鍼灸接骨院　泉が丘院
-    "広島県安芸郡府中町大須2-1-1": "イオンモール広島府中",  # 姿勢堂　府中整体院
-}
+# GSI（国土地理院）・Nominatim(OSM)どちらでも見つからない・別地点に当たってしまう住所を、
+# 確認済みの検索語に差し替える。表示用の住所（②店舗マスタ）はそのままで、地図検索だけを置き換える。
+# GSIが番地レベルまで正確に対応してくれるため、今はここに登録が必要な住所は無い。
+GEOCODE_OVERRIDES: dict[str, str] = {}
 
 _PREF_RE = re.compile(r"^(北海道|東京都|京都府|大阪府|.{2,3}県)")
+_GUN_RE = re.compile(r"^[^\s　0-9]{1,6}郡")
 _CITY_RE = re.compile(r"^([^\s　0-9]{1,6}?[市区町村])")
 
 
 def _area_token(query: str) -> Optional[str]:
-    """住所から市区町村名を取り出す（例: 長野県長野市高田 → 長野市）。"""
+    """住所から市区町村名を取り出す（例: 長野県長野市高田 → 長野市）。
+
+    「◯◯郡△△町」のように郡名が付く住所は、地図サービス側で郡名を
+    省略して返すことがあるため、郡名は比較対象から外す
+    （例: 広島県安芸郡府中町 → 府中町）。
+    """
     without_pref = _PREF_RE.sub("", query.strip())
-    m = _CITY_RE.search(without_pref)
+    without_gun = _GUN_RE.sub("", without_pref)
+    m = _CITY_RE.search(without_gun)
     return m.group(1) if m else None
 
 
@@ -141,6 +141,34 @@ def _looks_like_same_area(query: str, display_name: str) -> bool:
     if not token:
         return True  # 市区町村を含まない検索語（駅名・空港名など）は判定しない
     return _normalize_area(token) in _normalize_area(display_name)
+
+
+def _gsi_geocode(query: str) -> Optional[dict]:
+    """国土地理院（GSI）の住所検索。番地まで含む正式な住所であれば、
+    Nominatim（OSM）よりずっと正確に建物レベルの座標を返してくれる。
+    ただし駅名・施設名など「住所ではない」語には対応していないため、
+    見つからなければ None を返し、呼び出し元でNominatimにフォールバックする。
+    """
+    try:
+        resp = requests.get(GSI_URL, params={"q": query}, timeout=8)
+        resp.raise_for_status()
+        results = resp.json()
+    except requests.exceptions.RequestException:
+        return None  # GSIが落ちていてもNominatimに任せれば良いので、ここではエラーにしない
+
+    if not results:
+        return None
+
+    props = results[0].get("properties", {})
+    coords = results[0].get("geometry", {}).get("coordinates")
+    if not coords or len(coords) < 2:
+        return None
+
+    title = props.get("title", query)
+    if not _looks_like_same_area(query, title):
+        return None
+
+    return {"lat": float(coords[1]), "lon": float(coords[0]), "display_name": title}
 
 
 def _geocode_query(query: str) -> Optional[dict]:
@@ -190,7 +218,13 @@ def _geocode_query(query: str) -> Optional[dict]:
 
 def geocode(address: str) -> Optional[dict]:
     """住所・院名・地名などの文字列から緯度経度を取得する。
-    番地レベルで見つからない場合は「◯丁目」までに丸めて再試行する。"""
+
+    1. まず国土地理院（GSI）に問い合わせる。番地まで書かれた住所なら建物レベルで正確。
+       （Nominatimだと「丁目」までしか分からず、同じ丁目内の別住所が同じ座標に
+       丸め込まれて移動時間が0分になってしまうことがあった）
+    2. GSIで見つからなければ（駅名・施設名など住所以外の語や、GSI未登録の住所）、
+       これまで通りNominatimを試す。番地レベルで見つからない場合は「◯丁目」までに丸めて再試行する。
+    """
     address = (address or "").strip()
     if not address:
         return None
@@ -201,11 +235,12 @@ def geocode(address: str) -> Optional[dict]:
 
     lookup = GEOCODE_OVERRIDES.get(address, address)
 
-    value = None
-    for variant in _address_variants(lookup):
-        value = _geocode_query(variant)  # MapServiceError はここで呼び出し元へ伝播させる
-        if value:
-            break
+    value = _gsi_geocode(lookup)
+    if not value:
+        for variant in _address_variants(lookup):
+            value = _geocode_query(variant)  # MapServiceError はここで呼び出し元へ伝播させる
+            if value:
+                break
 
     _geocode_cache[address] = value
     return value
