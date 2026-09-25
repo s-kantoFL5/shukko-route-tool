@@ -37,7 +37,10 @@ app = FastAPI(title="出張ルート表 自動化ツール")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-OSRM_URL = "https://router.project-osrm.org/route/v1/driving/{}"
+OSRM_URL_BY_MODE = {
+    "car": "https://router.project-osrm.org/route/v1/driving/{}",
+    "walk": "https://routing.openstreetmap.de/routed-foot/route/v1/foot/{}",
+}
 # Nominatimの利用ポリシー上、連絡先が分かるUser-Agentを付与する
 USER_AGENT = "shukko-route-tool/1.0 (internal business-trip planner for a Japanese clinic chain)"
 
@@ -225,13 +228,15 @@ async def api_hospitals():
 
 
 @app.get("/api/drivetime")
-async def api_drivetime(origin: str, destination: str):
+async def api_drivetime(origin: str, destination: str, mode: str = "car"):
     origin = (origin or "").strip()
     destination = (destination or "").strip()
     if not origin or not destination:
         raise HTTPException(400, "origin, destination は必須です")
+    if mode not in OSRM_URL_BY_MODE:
+        raise HTTPException(400, f"mode は {list(OSRM_URL_BY_MODE)} のいずれかにしてください")
 
-    cache_key = f"{origin}__{destination}"
+    cache_key = f"{origin}__{destination}__{mode}"
     if cache_key in _drivetime_cache:
         return _drivetime_cache[cache_key]
 
@@ -255,18 +260,19 @@ async def api_drivetime(origin: str, destination: str):
                 time.sleep(wait)
             _last_osrm_call = time.time()
 
-        resp = requests.get(OSRM_URL.format(coords), params={"overview": "false"}, timeout=15)
+        resp = requests.get(OSRM_URL_BY_MODE[mode].format(coords), params={"overview": "false"}, timeout=15)
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.RequestException as exc:
         raise HTTPException(
             502,
-            f"OSRM(ルート計算サービス)に接続できませんでした（社内ネットワークやファイアウォール、"
+            f"ルート計算サービスに接続できませんでした（社内ネットワークやファイアウォール、"
             f"プロキシ設定が原因の可能性があります）。詳細: {exc}",
         ) from exc
 
     if data.get("code") != "Ok" or not data.get("routes"):
-        raise HTTPException(404, "ルートが見つかりませんでした（車で移動できない経路の可能性があります）")
+        label = "徒歩で" if mode == "walk" else "車で"
+        raise HTTPException(404, f"ルートが見つかりませんでした（{label}移動できない経路の可能性があります）")
 
     route = data["routes"][0]
     result = {
