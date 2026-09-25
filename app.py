@@ -25,6 +25,14 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 with open(BASE_DIR / "data" / "hospitals.json", encoding="utf-8") as f:
     HOSPITALS = json.load(f)
 
+# 院・本社・主要駅の緯度経度は tools/build_geocache.py で事前に調べて保存してある。
+# これがあるとNominatimへの問い合わせが不要になり、速度とアクセス制限の両方で有利。
+_CACHE_FILE = BASE_DIR / "data" / "geocode.json"
+GEOCODE_CACHE_FILE: dict = {}
+if _CACHE_FILE.exists():
+    with open(_CACHE_FILE, encoding="utf-8") as f:
+        GEOCODE_CACHE_FILE = json.load(f)
+
 app = FastAPI(title="出張ルート表 自動化ツール")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -36,6 +44,8 @@ USER_AGENT = "shukko-route-tool/1.0 (internal business-trip planner for a Japane
 _geocode_cache: dict[str, Optional[dict]] = {}
 _drivetime_cache: dict[str, dict] = {}
 _last_nominatim_call = 0.0
+_last_osrm_call = 0.0
+_osrm_lock = threading.Lock()
 _lock = threading.Lock()
 
 
@@ -91,6 +101,9 @@ def _address_variants(address: str) -> list[str]:
 GEOCODE_OVERRIDES = {
     "長野県長野市高田 1758": "長野県長野市高田南長野",  # MEGAドン・キホーテ長野高田院
     "大阪府大阪市淀川区三国本町 3": "阪急三国駅",  # 三国エキナカ接骨院（阪急三国駅2F）
+    "千葉県茂原市六ツ野八貫野 2785-1": "ライフガーデン茂原",  # ライフガーデン茂原整骨院
+    "静岡県静岡市駿河区みずほ 4-11-5": "静岡県静岡市駿河区 安倍川駅",  # 安倍川駅前総合治療院
+    "北海道札幌市東区北三十三条東 15-1-1": "北海道札幌市東区 新道東駅",  # 新道東駅接骨院
 }
 
 _PREF_RE = re.compile(r"^(北海道|東京都|京都府|大阪府|.{2,3}県)")
@@ -104,6 +117,14 @@ def _area_token(query: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# 「鎌ヶ谷市」と「鎌ケ谷市」のような表記揺れを吸収してから比較する
+_KANA_VARIANTS = str.maketrans({"ヶ": "ケ", "ガ": "ケ", "が": "ケ"})
+
+
+def _normalize_area(s: str) -> str:
+    return s.translate(_KANA_VARIANTS)
+
+
 def _looks_like_same_area(query: str, display_name: str) -> bool:
     """検索結果が同じ市区町村かを確認する。
 
@@ -113,7 +134,7 @@ def _looks_like_same_area(query: str, display_name: str) -> bool:
     token = _area_token(query)
     if not token:
         return True  # 市区町村を含まない検索語（駅名・空港名など）は判定しない
-    return token in display_name
+    return _normalize_area(token) in _normalize_area(display_name)
 
 
 def _geocode_query(query: str) -> Optional[dict]:
@@ -133,9 +154,17 @@ def _geocode_query(query: str) -> Optional[dict]:
             _last_nominatim_call = time.time()
             resp.raise_for_status()
             results = resp.json()
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 429:
+                raise MapServiceError(
+                    "地図検索（OpenStreetMap）の利用制限に達しました。"
+                    "少し時間をおいてから「全再計算」をお試しください。"
+                ) from exc
+            raise MapServiceError(f"地図検索に失敗しました（{status}）") from exc
         except requests.exceptions.RequestException as exc:
             raise MapServiceError(
-                f"OpenStreetMap(Nominatim)に接続できませんでした（社内ネットワークやファイアウォール、"
+                f"OpenStreetMap(Nominatim)に接続できませんでした（ネットワークやファイアウォール、"
                 f"プロキシ設定が原因の可能性があります）。詳細: {exc}"
             ) from exc
 
@@ -159,6 +188,8 @@ def geocode(address: str) -> Optional[dict]:
     address = (address or "").strip()
     if not address:
         return None
+    if address in GEOCODE_CACHE_FILE:
+        return GEOCODE_CACHE_FILE[address]
     if address in _geocode_cache:
         return _geocode_cache[address]
 
@@ -216,6 +247,14 @@ async def api_drivetime(origin: str, destination: str):
 
     coords = f"{o['lon']},{o['lat']};{d['lon']},{d['lat']}"
     try:
+        # 無料の公開サーバーなので、連続呼び出しの間隔を少し空ける
+        global _last_osrm_call
+        with _osrm_lock:
+            wait = 0.25 - (time.time() - _last_osrm_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_osrm_call = time.time()
+
         resp = requests.get(OSRM_URL.format(coords), params={"overview": "false"}, timeout=15)
         resp.raise_for_status()
         data = resp.json()
