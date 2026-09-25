@@ -538,13 +538,21 @@
       opt.textContent = p.label;
       chihouGroup.appendChild(opt);
     });
+    const brandGroup = document.getElementById("presetGroupBrand");
+    (presets.BRAND_PRESETS || []).forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = "brand:" + p.key;
+      opt.textContent = p.label;
+      brandGroup.appendChild(opt);
+    });
   }
 
   function findPreset(value) {
     if (!value) return null;
     const [region, key] = value.split(":");
     const presets = window.ROUTE_PRESETS;
-    const list = region === "kanto" ? presets.KANTO_PRESETS : presets.CHIHOU_PRESETS;
+    const list =
+      region === "kanto" ? presets.KANTO_PRESETS : region === "brand" ? presets.BRAND_PRESETS : presets.CHIHOU_PRESETS;
     const preset = list.find((p) => p.key === key);
     return preset ? { ...preset, region } : null;
   }
@@ -567,6 +575,7 @@
     }
 
     // 関東圏は本社を起点・終点に、地方は主要駅を起点に自動で置く
+    // start が無いプリセット（ブランドごとの一覧など）は、1件目の院からそのまま始める
     const entries =
       preset.region === "kanto"
         ? [
@@ -574,7 +583,9 @@
             ...preset.stops,
             { name: window.ROUTE_PRESETS.HQ_NAME, pref: "" },
           ]
-        : [{ name: preset.start.name, pref: preset.pref, address: preset.start.address }, ...preset.stops];
+        : preset.start
+          ? [{ name: preset.start.name, pref: preset.pref, address: preset.start.address }, ...preset.stops]
+          : [...preset.stops];
 
     const stops = entries.map((e) => buildStopFromName(e.name, e.pref, e.address));
     stops[0].departure = startTime(); // 起点は9:00出発。以降は自動計算で埋まる
