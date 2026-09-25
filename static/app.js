@@ -23,6 +23,9 @@
       arrival: "",
       stay: "",
       departure: "",
+      arrivalManual: false,
+      departureManual: false,
+      driveMinutes: null,
       driveText: "",
       driveError: "",
       hours: "",
@@ -67,6 +70,45 @@
       stop.address = geocodeHint ? `${geocodeHint}${stop.place.trim()}` : stop.place.trim();
       stop.hours = "";
       stop.corp = "";
+    }
+  }
+
+  // ---------- 時刻の自動計算（H:MM文字列 <-> 分） ----------
+  function parseHM(s) {
+    const m = /^(\d{1,3}):([0-5]\d)$/.exec((s || "").trim());
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+
+  function formatHM(totalMinutes) {
+    const mins = Math.round(totalMinutes);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${h}:${String(m).padStart(2, "0")}`;
+  }
+
+  // 前の行の出発時間＋車移動時間から到着時間を、到着時間＋滞在時間から出発時間を自動計算する。
+  // 手入力（arrivalManual/departureManual）されたセルは上書きしない。
+  function applyTimesForStop(dayIdx, stopIdx) {
+    const day = trip.days[dayIdx];
+    const stop = day.stops[stopIdx];
+    const prev = stopIdx > 0 ? day.stops[stopIdx - 1] : null;
+
+    if (prev && !stop.arrivalManual && stop.driveMinutes != null) {
+      const prevDep = parseHM(prev.departure);
+      if (prevDep != null) stop.arrival = formatHM(prevDep + stop.driveMinutes);
+    }
+    if (!stop.departureManual) {
+      const arr = parseHM(stop.arrival);
+      const stay = parseHM(stop.stay);
+      if (arr != null && stay != null) stop.departure = formatHM(arr + stay);
+    }
+  }
+
+  function cascadeDay(dayIdx, fromStopIdx) {
+    const day = trip.days[dayIdx];
+    for (let i = fromStopIdx; i < day.stops.length; i++) {
+      applyTimesForStop(dayIdx, i);
     }
   }
 
@@ -192,9 +234,23 @@
       recalcAround(dayIdx, stopIdx);
     });
 
-    arrivalEl.addEventListener("input", () => (stop.arrival = arrivalEl.value));
-    stayEl.addEventListener("input", () => (stop.stay = stayEl.value));
-    departureEl.addEventListener("input", () => (stop.departure = departureEl.value));
+    arrivalEl.addEventListener("change", () => {
+      stop.arrival = arrivalEl.value;
+      stop.arrivalManual = arrivalEl.value.trim() !== "";
+      cascadeDay(dayIdx, stopIdx);
+      renderAll();
+    });
+    stayEl.addEventListener("change", () => {
+      stop.stay = stayEl.value;
+      cascadeDay(dayIdx, stopIdx);
+      renderAll();
+    });
+    departureEl.addEventListener("change", () => {
+      stop.departure = departureEl.value;
+      stop.departureManual = departureEl.value.trim() !== "";
+      cascadeDay(dayIdx, stopIdx);
+      renderAll();
+    });
     noteEl.addEventListener("input", () => (stop.note = noteEl.value));
 
     node.querySelector(".f-drive-refresh").addEventListener("click", () => recalcOne(dayIdx, stopIdx, true));
@@ -245,6 +301,8 @@
     if (!prev || !prev.address.trim() || !stop.address.trim()) {
       stop.driveText = "";
       stop.driveError = "";
+      stop.driveMinutes = null;
+      cascadeDay(dayIdx, stopIdx);
       renderAll();
       return;
     }
@@ -252,6 +310,7 @@
     const key = prev.address.trim() + "||" + stop.address.trim();
     if (!force && driveCache.has(key)) {
       applyDriveResult(stop, driveCache.get(key));
+      cascadeDay(dayIdx, stopIdx);
       renderAll();
       return;
     }
@@ -273,13 +332,16 @@
     } catch (e) {
       stop.driveText = "";
       stop.driveError = String(e.message || e).slice(0, 40);
+      stop.driveMinutes = null;
     }
+    cascadeDay(dayIdx, stopIdx);
     renderAll();
   }
 
   function applyDriveResult(stop, data) {
     stop.driveText = `${data.duration_text}（${data.distance_km}km）`;
     stop.driveError = "";
+    stop.driveMinutes = data.duration_sec / 60;
   }
 
   function recalcAround(dayIdx, stopIdx) {

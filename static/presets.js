@@ -39,7 +39,7 @@
     { key: "miyagi", label: "宮城", pref: "宮城県", stops: ["仙台駅", "名取", "長町南", "陸前高砂", "北仙台", "南仙台"] },
     { key: "okinawa", label: "沖縄", pref: "沖縄県", stops: ["那覇空港", "宜野湾", "あわせ", "浦添", "あじゃ"] },
     { key: "shizuoka", label: "静岡", pref: "静岡県", stops: ["新静岡", "石田", "新浜松", "菊川", "安倍川"] },
-    { key: "okayama", label: "岡山", pref: "岡山県", stops: ["岡山", "倉敷", "花尻"] },
+    { key: "okayama", label: "岡山", pref: "岡山県", stops: ["岡山駅前整骨院", "倉敷インター接骨院", "ハローズ花尻接骨院"] },
     { key: "aichi", label: "愛知", pref: "愛知県", stops: ["千種本山", "池下", "中村公園", "一宮"] },
     { key: "fukuoka", label: "福岡", pref: "福岡県", stops: ["井尻", "西新"] },
     { key: "fukushima", label: "福島", pref: "福島県", stops: ["若葉町", "郡山西口"] },
