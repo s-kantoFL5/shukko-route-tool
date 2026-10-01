@@ -42,6 +42,9 @@ OSRM_URL_BY_MODE = {
     "car": "https://router.project-osrm.org/route/v1/driving/{}",
     "walk": "https://routing.openstreetmap.de/routed-foot/route/v1/foot/{}",
 }
+# OSRMの車移動時間は信号待ち・渋滞を無視した理論値のため、実測（Googleマップ）より常に短く出る。
+# 市街地の実例で検証した比率をもとに補正する係数（1.4倍）。
+CAR_TRAFFIC_FACTOR = 1.4
 # Nominatimの利用ポリシー上、連絡先が分かるUser-Agentを付与する
 USER_AGENT = "shukko-route-tool/1.0 (internal business-trip planner for a Japanese clinic chain)"
 
@@ -313,9 +316,16 @@ async def api_drivetime(origin: str, destination: str, mode: str = "car"):
         raise HTTPException(404, f"ルートが見つかりませんでした（{label}移動できない経路の可能性があります）")
 
     route = data["routes"][0]
+    duration_sec = route["duration"]
+    if mode == "car":
+        # OSRMは信号待ち・渋滞を考慮せず「制限速度で流れた場合」の理論値を返すため、
+        # 実際のGoogleマップの所要時間より短く出る（市街地ほど顕著）。
+        # 実測との比較（例: 本社→わかば整骨院 5.8km：OSRM 12分 / 実測 19〜20分）をもとに補正する。
+        duration_sec *= CAR_TRAFFIC_FACTOR
+
     result = {
-        "duration_sec": route["duration"],
-        "duration_text": format_duration(route["duration"]),
+        "duration_sec": duration_sec,
+        "duration_text": format_duration(duration_sec),
         "distance_km": round(route["distance"] / 1000, 1),
         "origin_resolved": o["display_name"],
         "destination_resolved": d["display_name"],
